@@ -75,6 +75,18 @@ jobs:
     needs: build-and-push
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Copy compose and nginx config to droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: "docker-compose.yml,nginx/"
+          target: "/opt/go-api"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
@@ -84,35 +96,30 @@ jobs:
           script: |
             set -e
 
-            REGISTRY="ghcr.io"
-            IMAGE="${REGISTRY}/${{ github.repository }}"
-            TAG="sha-${{ github.sha }}"
-            CONTAINER_NAME="${{ env.CONTAINER_NAME }}"
-            PORT=8080
+            IMAGE="ghcr.io/${{ github.repository }}:sha-${{ github.sha }}"
 
             echo "==> Logging in to GHCR"
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${REGISTRY} \
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
               --username "${{ github.actor }}" \
               --password-stdin
 
-            echo "==> Pulling new image: ${IMAGE}:${TAG}"
-            docker pull "${IMAGE}:${TAG}"
+            echo "==> Pulling new image: ${IMAGE}"
+            docker pull "${IMAGE}"
 
-            echo "==> Stopping old container (if running)"
-            docker stop "${CONTAINER_NAME}" 2>/dev/null || true
-            docker rm   "${CONTAINER_NAME}" 2>/dev/null || true
+            echo "==> Stopping standalone go-api container from previous deploy (if exists)"
+            docker stop go-api 2>/dev/null || true
+            docker rm   go-api 2>/dev/null || true
 
-            echo "==> Starting new container"
-            docker run -d \
-              --name "${CONTAINER_NAME}" \
-              --restart unless-stopped \
-              -p "${PORT}:${PORT}" \
-              -e PORT="${PORT}" \
-              "${IMAGE}:${TAG}"
+            echo "==> Writing .env with current image tag"
+            echo "GO_API_IMAGE=${IMAGE}" > /opt/go-api/.env
 
-            echo "==> Verifying container is running"
+            echo "==> Bringing up stack: nginx + 2x go-api"
+            cd /opt/go-api
+            docker compose up -d --force-recreate --scale go-api=2
+
+            echo "==> Stack status"
             sleep 2
-            docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            docker compose ps
 
             echo "==> Pruning old images"
             docker image prune -f
