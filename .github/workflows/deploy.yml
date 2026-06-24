@@ -106,19 +106,28 @@ jobs:
             echo "==> Pulling new image: ${IMAGE}"
             docker pull "${IMAGE}"
 
-            echo "==> Stopping standalone go-api container from previous deploy (if exists)"
-            docker stop go-api 2>/dev/null || true
-            docker rm   go-api 2>/dev/null || true
-
             echo "==> Writing .env with current image tag"
             echo "GO_API_IMAGE=${IMAGE}" > /opt/go-api/.env
 
-            echo "==> Bringing up stack: nginx + 2x go-api"
+            echo "==> Installing nginx site config"
+            cp /opt/go-api/nginx/go-api.conf /etc/nginx/sites-available/go-api
+            ln -sf /etc/nginx/sites-available/go-api /etc/nginx/sites-enabled/go-api
+            rm -f /etc/nginx/sites-enabled/default
+            nginx -t
+
+            echo "==> Rolling update: go-api-1"
             cd /opt/go-api
-            docker compose up -d --force-recreate --scale go-api=2
+            docker compose up -d --no-deps --force-recreate go-api-1
+            sleep 3
+
+            echo "==> Rolling update: go-api-2"
+            docker compose up -d --no-deps --force-recreate go-api-2
+            sleep 3
+
+            echo "==> Reloading nginx config (graceful, no downtime)"
+            systemctl reload nginx
 
             echo "==> Stack status"
-            sleep 2
             docker compose ps
 
             echo "==> Pruning old images"
